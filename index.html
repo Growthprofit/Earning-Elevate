@@ -857,64 +857,78 @@
                 const email = document.getElementById('signup-email').value;
                 const password = document.getElementById('signup-password').value;
 
-                database.ref('users').orderByChild('username').equalTo(username).once('value', snapshot => {
-                    if (snapshot.exists()) {
-                        showCustomAlert("Username already exists. Please try another one.");
+                database.ref('users').orderByChild('username').equalTo(username).once('value')
+                    .then(snapshot => {
+                        if (snapshot.exists()) {
+                            showCustomAlert("Username already exists. Please try another one.");
+                            btn.disabled = false;
+                            btn.textContent = 'Signup';
+                            return;
+                        }
+
+                        const processSignup = (referrerUid = null) => {
+                            auth.createUserWithEmailAndPassword(email, password)
+                                .then(userCredential => {
+                                    const user = userCredential.user;
+                                    const newUserdata = {
+                                        username: username,
+                                        phone: phone,
+                                        email: email,
+                                        balance: 0,
+                                        totalProfit: 0,
+                                        totalCommission: 0,
+                                        createdAt: firebase.database.ServerValue.TIMESTAMP
+                                    };
+
+                                    if (referrerUid) {
+                                        newUserdata.referredBy = referrerUid;
+                                    }
+
+                                    const updates = {};
+                                    updates['/users/' + user.uid] = newUserdata;
+                                    if (referrerUid) {
+                                        // YEH HAI NAYA BADLAV: Hum 'true' ki jagah zaroori data save kar rahe hain
+                                        updates['/users/' + referrerUid + '/referrals/' + user.uid] = {
+                                            username: username,
+                                            joinDate: firebase.database.ServerValue.TIMESTAMP
+                                        };
+                                    }
+                                    
+                                    return database.ref().update(updates);
+                                })
+                                .catch(error => {
+                                    showCustomAlert("Signup Error: " + error.message);
+                                })
+                                .finally(() => {
+                                    btn.disabled = false;
+                                    btn.textContent = 'Signup';
+                                });
+                        };
+                        
+                        if (referrerUsername) {
+                            database.ref('users').orderByChild('username').equalTo(referrerUsername).once('value')
+                                .then(referrerSnapshot => {
+                                    let referrerUid = null;
+                                    if (referrerSnapshot.exists()) {
+                                        const referrerData = referrerSnapshot.val();
+                                        referrerUid = Object.keys(referrerData)[0];
+                                    }
+                                    processSignup(referrerUid);
+                                })
+                                .catch(error => {
+                                    showCustomAlert("Could not verify referrer: " + error.message);
+                                    processSignup(null);
+                                });
+                        } else {
+                            processSignup();
+                        }
+
+                    })
+                    .catch(error => {
+                        showCustomAlert("Database Error: " + error.message);
                         btn.disabled = false;
                         btn.textContent = 'Signup';
-                        return;
-                    }
-
-                    const processSignup = (referrerUid = null) => {
-                        auth.createUserWithEmailAndPassword(email, password)
-                            .then(userCredential => {
-                                const user = userCredential.user;
-                                
-                                const newUserdata = {
-                                    username: username,
-                                    phone: phone,
-                                    email: email,
-                                    passwordLength: password.length,
-                                    balance: 0,
-                                    totalProfit: 0,
-                                    totalCommission: 0, // Commission ke liye naya field
-                                    createdAt: firebase.database.ServerValue.TIMESTAMP
-                                };
-
-                                if (referrerUid) {
-                                    newUserdata.referredBy = referrerUid; // Referrer ka UID save karein
-                                }
-
-                                database.ref('users/' + user.uid).set(newUserdata);
-
-                                if (referrerUid) {
-                                    database.ref('users/' + referrerUid + '/referrals/' + user.uid).set(true);
-                                }
-                            })
-                            .catch(error => {
-                                javascript
-showCustomAlert("Signup Error: " + error.message);
-                            })
-                            .finally(() => {
-                                btn.disabled = false;
-                                btn.textContent = 'Signup';
-                            });
-                    };
-
-                    if (referrerUsername) {
-                        database.ref('users').orderByChild('username').equalTo(referrerUsername).once('value', referrerSnapshot => {
-                            if (referrerSnapshot.exists()) {
-                                const referrerData = referrerSnapshot.val();
-                                const referrerUid = Object.keys(referrerData)[0];
-                                processSignup(referrerUid);
-                            } else {
-                                processSignup(); // Agar ghalat referral link hai
-                            }
-                        });
-                    } else {
-                        processSignup(); // Koi referral nahi hai
-                    }
-                });
+                    });
 
             } else if (type === 'login') {
                 const email = document.getElementById('login-email').value;
@@ -923,12 +937,14 @@ showCustomAlert("Signup Error: " + error.message);
                 auth.signInWithEmailAndPassword(email, password)
                     .catch(error => {
                         showCustomAlert("Login Error: " + error.message);
+                    })
+                    .finally(() => {
                         btn.disabled = false;
                         btn.textContent = 'Login';
                     });
             }
         }
-
+        
         function handleLogout() {
     showCustomConfirm('Are you sure you want to logout?', function() {
         // Yeh code tab chalega jab user "Logout" button par click karega
@@ -987,15 +1003,15 @@ showCustomAlert("Signup Error: " + error.message);
 
         function showEarningHistoryPage() { showPage('earning-history-page'); }
         function showWithdrawHistoryPage() { showPage('withdraw-history-page'); }
-        
-        function showProfilePage() {
+                function showProfilePage() {
             showPage('profile-page');
             document.getElementById('profile-username').value = currentUserData.username || '';
             document.getElementById('profile-phone').value = currentUserData.phone || '';
             document.getElementById('profile-email').value = currentUserData.email || '';
-            document.getElementById('profile-password').value = '•'.repeat(currentUserData.passwordLength || 0);
+            // Ab hum yahan par hamesha fixed dots dikhayenge
+            document.getElementById('profile-password').value = '**********';
         }
-
+        
         // --- DEPOSIT FUNCTIONALITY ---
         function handleDepositProof(event) {
             event.preventDefault();
@@ -1634,36 +1650,23 @@ if (videoUrl && typeof videoUrl === 'string') {
                 let count = 0;
 
                 snapshot.forEach(childSnapshot => {
-                    const referredUserId = childSnapshot.key;
                     count++;
-                    const rowNumber = count;
+                    const referralData = childSnapshot.val(); // Ab hum poora data (username, joinDate) yahan se lenge
+                    
+                    const referralRow = document.createElement('div');
+                    referralRow.className = 'history-row';
+                    referralRow.style.gridTemplateColumns = '0.5fr 1.5fr 1fr 1fr 1fr';
 
-                    database.ref('users/' + referredUserId).once('value', userSnapshot => {
-                        const referredUserData = userSnapshot.val();
-                        if (!referredUserData) return;
-
-                        database.ref('deposits').orderByChild('userId').equalTo(referredUserId).once('value', depositSnapshot => {
-                            let totalDeposit = 0;
-                            depositSnapshot.forEach(depo => {
-                                if (depo.val().status === 'approved') {
-                                    totalDeposit += depo.val().amount;
-                                }
-                            });
-
-                            const referralRow = document.createElement('div');
-                            referralRow.className = 'history-row'; // Reuse class for styling
-                            referralRow.style.gridTemplateColumns = '0.5fr 1.5fr 1fr 1fr 1fr';
-
-                            referralRow.innerHTML = `
-                                <span>${rowNumber}</span>
-                                <span>${referredUserData.username}</span>
-                                <span>${new Date(referredUserData.createdAt).toLocaleDateString()}</span>
-                                <span>${totalDeposit > 0 ? totalDeposit : 'N/A'}</span>
-                                <span>N/A</span>
-                            `;
-                            referralsListContainer.appendChild(referralRow);
-                        });
-                    });
+                    // Note: Ab hum suraksha ki vajah se referral ka deposit nahi dikha sakte.
+                    // Iske liye Cloud Functions ki zaroorat padegi.
+                    referralRow.innerHTML = `
+                        <span>${count}</span>
+                        <span>${referralData.username}</span>
+                        <span>${new Date(referralData.joinDate).toLocaleDateString()}</span>
+                        <span>N/A</span>
+                        <span>N/A</span>
+                    `;
+                    referralsListContainer.appendChild(referralRow);
                 });
             }, error => {
                  referralsListContainer.innerHTML = '<div class="no-referrals"><p>Could not load referrals.</p></div>';
