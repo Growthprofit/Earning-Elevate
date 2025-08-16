@@ -97,6 +97,8 @@
         .referrals-list-title { padding: 15px; background-color: var(--primary-color); border-radius: 10px; font-size: 1.2em; text-align: center; margin-bottom: 15px; }
         .referrals-list-container { background: linear-gradient(135deg, var(--gradient-end), var(--gradient-start)); padding: 15px; border-radius: 15px; }
         .referrals-list-header { display: grid; grid-template-columns: 0.5fr 1.5fr 1fr 1fr 1fr; padding-bottom: 10px; margin-bottom: 10px; border-bottom: 1px solid rgba(255, 255, 255, 0.5); font-weight: 600; text-align: center; }
+        .referral-row { display: grid; grid-template-columns: 0.5fr 1.5fr 1fr 1fr 1fr; text-align: center; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.2); }
+        .referral-row:last-child { border-bottom: none; }
         .no-referrals { padding: 20px; text-align: center; color: var(--text-muted); }
         
         /* --- ACTIVE DEPOSITS PAGE (NEW) --- */
@@ -890,7 +892,9 @@
                                         // YEH HAI NAYA BADLAV: Hum 'true' ki jagah zaroori data save kar rahe hain
                                         updates['/users/' + referrerUid + '/referrals/' + user.uid] = {
                                             username: username,
-                                            joinDate: firebase.database.ServerValue.TIMESTAMP
+                                            joinDate: firebase.database.ServerValue.TIMESTAMP,
+                                            totalDeposit: 0, // Shuru mein deposit 0 hoga
+                                            totalBonus: 0 // Shuru mein bonus 0 hoga
                                         };
                                     }
                                     
@@ -1036,7 +1040,8 @@
                 senderName: senderName,
                 status: 'pending',
                 createdAt: firebase.database.ServerValue.TIMESTAMP,
-                taskCreated: false
+                taskCreated: false,
+                referralNotified: false // Nayi field add ki gayi hai
             };
 
             newDepositRef.set(depositRequest)
@@ -1052,6 +1057,7 @@
                 });
         }
 
+        // ===== Function Change Start: listenForUserDeposits =====
         function listenForUserDeposits(userId) {
             depositListener = database.ref('deposits').orderByChild('userId').equalTo(userId);
             
@@ -1074,6 +1080,27 @@
                             if (!deposit.taskCreated) {
                                 createTaskForUser(deposit);
                             }
+                            
+                            // *** NAYA CODE: Jab deposit approve ho to referrer ko update karein ***
+                            if (!deposit.referralNotified) {
+                                database.ref('users/' + userId).once('value').then(userSnapshot => {
+                                    if (userSnapshot.exists() && userSnapshot.val().referredBy) {
+                                        const referrerUid = userSnapshot.val().referredBy;
+                                        const referralNodeRef = database.ref(`users/${referrerUid}/referrals/${userId}`);
+                                        
+                                        referralNodeRef.transaction(currentData => {
+                                            if (currentData) {
+                                                currentData.totalDeposit = (currentData.totalDeposit || 0) + deposit.amount;
+                                            }
+                                            return currentData;
+                                        });
+
+                                        database.ref(`deposits/${deposit.depositId}`).update({ referralNotified: true });
+                                    }
+                                });
+                            }
+                            // *** NAYA CODE KHATAM ***
+
                         } else if (deposit.status === 'pending') {
                             pendingAmount += deposit.amount;
                         }
@@ -1096,6 +1123,7 @@
                 document.getElementById('dashboard-pending-deposits').textContent = `PKR ${pendingAmount}`;
             });
         }
+        // ===== Function Change End: listenForUserDeposits =====
 
         function createTaskForUser(deposit) {
             const plan = planDetailsConfig[deposit.planName];
@@ -1304,7 +1332,7 @@ if (videoUrl && typeof videoUrl === 'string') {
             }
         }
 
-        // === IS FUNCTION MEIN COMMISSION KA LOGIC ADD KIYA GAYA HAI ===
+        // ===== Function Change Start: claimProfit =====
         function claimProfit(taskId) {
             const user = auth.currentUser;
             if (!user) { alert('You are not logged in.'); return; }
@@ -1358,6 +1386,16 @@ if (videoUrl && typeof videoUrl === 'string') {
                                         }
                                         return referrerData;
                                     });
+                                    
+                                    // *** NAYA CODE: Jab commission mile to referrer ke record mein bonus update karein ***
+                                    const referralNodeRef = database.ref(`users/${referrerUid}/referrals/${user.uid}`);
+                                    referralNodeRef.transaction(currentData => {
+                                        if (currentData) {
+                                            currentData.totalBonus = (currentData.totalBonus || 0) + commissionAmount;
+                                        }
+                                        return currentData;
+                                    });
+                                    // *** NAYA CODE KHATAM ***
                                 }
                             }
                         });
@@ -1372,6 +1410,7 @@ if (videoUrl && typeof videoUrl === 'string') {
                 taskRef.once('value', snapshot => updateTaskActionButtonState(taskId, snapshot.val()));
             });
         }
+        // ===== Function Change End: claimProfit =====
         
         // --- HELPER FUNCTIONS ---
         function showDepositPaymentPage(planName, planPrice) {
@@ -1633,7 +1672,7 @@ if (videoUrl && typeof videoUrl === 'string') {
             });
         }
         
-        // === YEH NAYA FUNCTION REFERRALS KI LIST LOAD KARNE KE LIYE HAI ===
+        // ===== Function Change Start: listenForReferrals =====
         function listenForReferrals(userId) {
             const referralsListContainer = document.getElementById('referrals-list');
             referralsListContainer.innerHTML = '<div class="no-referrals"><p>Loading referrals...</p></div>';
@@ -1651,20 +1690,19 @@ if (videoUrl && typeof videoUrl === 'string') {
 
                 snapshot.forEach(childSnapshot => {
                     count++;
-                    const referralData = childSnapshot.val(); // Ab hum poora data (username, joinDate) yahan se lenge
+                    const referralData = childSnapshot.val();
                     
                     const referralRow = document.createElement('div');
-                    referralRow.className = 'history-row';
-                    referralRow.style.gridTemplateColumns = '0.5fr 1.5fr 1fr 1fr 1fr';
-
-                    // Note: Ab hum suraksha ki vajah se referral ka deposit nahi dikha sakte.
-                    // Iske liye Cloud Functions ki zaroorat padegi.
+                    // *** NAYI CLASS ADD KI GAYI HAI ***
+                    referralRow.className = 'referral-row'; 
+                    
+                    // *** HTML AB NAYE DATA KE SAATH UPDATE HOGA ***
                     referralRow.innerHTML = `
                         <span>${count}</span>
                         <span>${referralData.username}</span>
                         <span>${new Date(referralData.joinDate).toLocaleDateString()}</span>
-                        <span>N/A</span>
-                        <span>N/A</span>
+                        <span>${(referralData.totalDeposit || 0).toFixed(2)}</span>
+                        <span>${(referralData.totalBonus || 0).toFixed(2)}</span>
                     `;
                     referralsListContainer.appendChild(referralRow);
                 });
@@ -1673,6 +1711,7 @@ if (videoUrl && typeof videoUrl === 'string') {
                  console.error("Error loading referrals:", error);
             });
         }
+        // ===== Function Change End: listenForReferrals =====
 
 
         function toggleAuthPages() {
